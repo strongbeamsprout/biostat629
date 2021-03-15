@@ -1,0 +1,403 @@
+---
+title: "629_project1"
+author: "YileChen"
+date: "3/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## data readin on the cluster
+#### get argument from the command line: 1. input documents for each variables in each month in year 2019; 2. corresponding output documents
+```{r}
+#!/usr/bin/env Rscript
+library(dplyr)
+
+args = commandArgs(trailingOnly=TRUE)
+if (length(args)==0) {
+  stop("At least one argument must be supplied (input file).n", call.=FALSE)
+}
+
+df = read.csv(args[1])
+df$Date = sapply(strsplit(df$StartDate," "), `[`, 1)
+tmp = df %>% group_by(ParticipantResearchID, Date) %>% summarize(min=min(Value), max=max(Value), mean=mean(Value), med=median(Value),sd=sd(Value), q1=quantile(Value, 0.25), q3=quantile(Value, 0.75))
+write.csv(tmp, file = args[2])
+```
+
+#### combine data together 
+```{r}
+library(data.table)
+library("tidyverse")
+
+path = "/nfs/turbo/umms-HDS629/MIPACT/MIPACT_Synthetic_HealthkitData"
+rbindlist_fread <- function(path, pattern = "*.csv") {
+    files = list.files(path, pattern, full.names = TRUE)
+    rbindlist(lapply(files, function(x) fread(x)))
+}
+
+bpdia.files = rbindlist_fread(path = "/home/yilechen/bp.processed/",pattern = "BloodPressureDiastolic")
+bpsys.files = rbindlist_fread(path = "/home/yilechen/bp.processed/",pattern = "BloodPressureSystolic")
+bp = merge(bpdia.files, bpsys.files, by =c("ParticipantResearchID","Date"))
+bp$hypertension = as.numeric(bp$med.x>90 | bp$med.y>140)
+save(bp,file="hyper.dat.RData")
+
+
+hr.files = rbindlist_fread(path = "/home/yilechen/hr.processed/",pattern = "out.csv")
+hr = hr.files %>% select(ParticipantResearchID, Date, mean, sd)
+save(hr, file="hr.dat.RData")
+
+step.files = rbindlist_fread(path = "/home/yilechen/step.processed/",pattern = "out.csv")
+step = step.files %>% select(ParticipantResearchID, Date, mean)
+save(step, file = "step.dat.RData")
+
+survey.files = rbindlist_fread(path = "/home/yilechen/survey.processed/",pattern = "out.csv")
+survey = survey.files %>% select(ParticipantResearchID, Date, mean.mood, sd.mood, mean.stress, sd.stress) %>%mutate(sd.mood = replace_na(sd.mood, 0), sd.stress = replace_na(sd.stress, 0))
+save(survey.files, file = "survey.dat.RData")
+
+covariate = merge(hr, step, by=c("ParticipantResearchID","Date"))
+colnames(covariate)[3:5] = c("mean.hr","sd.hr","dailystep")
+covariate = merge(covariate, survey, by=c("ParticipantResearchID","Date"))
+
+sub.bp = bp %>% select(ParticipantResearchID, Date,hypertension)
+
+finaldat = merge(sub.bp, covariate, by=c("ParticipantResearchID","Date")) %>% mutate(Date = as.numeric(as.Date(Date, origin="2019-01-01")) - as.numeric(as.Date("2019-01-01", origin="2019-01-01")))%>% arrange(ParticipantResearchID, Date) %>% drop_na()
+
+save(finaldat , file="final.dat.RData")
+
+n.samp = unique(finaldat$ParticipantResearchID)
+train.id = sample(n.samp, round(length(n.samp)/100*80), replace=F)
+test.id=setdiff(n.samp, train.id)
+train.dat = finaldat %>% filter(ParticipantResearchID %in% train.id)
+test.dat = finaldat %>% filter(ParticipantResearchID %in% test.id)
+```
+
+## check data
+```{r}
+library(ggplot2)
+library(lubridate)
+library("gtsummary")
+library(tidyr)
+setwd("C:/Users/evely/Google Drive/2021winter/629/")
+load("hyper.dat.RData")
+load("hr.dat.RData")
+load("step.dat.RData")
+load("survey.dat.RData")
+
+### blood pressure data exploration
+tmp = names(table(bp$ParticipantResearchID))[as.numeric(table(bp$ParticipantResearchID))>30]
+sub.bp = bp %>% filter(ParticipantResearchID %in% tmp)
+length(unique(sub.bp$ParticipantResearchID))
+prop.hyper = sub.bp %>% group_by(ParticipantResearchID) %>% summarize(sums = sum(hypertension), nums = length(hypertension))
+## NO. of people with fairly low hypertension risk
+sum(prop.hyper$sums==0)
+## No. of people with more than half of their records above the threshold
+sum(prop.hyper$sums/prop.hyper$nums > 0.5)
+sub.bp = merge(sub.bp, prop.hyper, by=("ParticipantResearchID"))
+sub.bp = sub.bp %>% mutate(prob = sums/nums)
+
+##boxplot(as.numeric(table(bp$ParticipantResearchID)))
+### heart rate data exploration
+length(unique(hr$ParticipantResearchID))
+tmp.hr = names(table(hr$ParticipantResearchID))[as.numeric(table(bp$ParticipantResearchID))>30]
+sub.hr = hr %>% filter(ParticipantResearchID %in% tmp.hr)
+length(unique(sub.hr$ParticipantResearchID))
+
+
+### step data exploration
+length(unique(step$ParticipantResearchID))
+tmp.step = names(table(step$ParticipantResearchID))[as.numeric(table(bp$ParticipantResearchID))>30]
+sub.step = step %>% filter(ParticipantResearchID %in% tmp.step)
+length(unique(sub.step$ParticipantResearchID))
+
+temps = merge(sub.bp[,c(1,2,22)], sub.hr, by=c("ParticipantResearchID", "Date"))
+temps = merge(temps, sub.step, by=c("ParticipantResearchID", "Date"))
+colnames(temps)[4:6] = c("mean.hr","sd.hr","mean.step")
+
+### survey data exploration
+survey.dat = survey.files %>% replace_na(list(sd.mood = 0, sd.stress = 0))
+
+
+### EHR demographic data exploration
+demo = read.csv("./EHR_Demographic_202010.csv")
+temps2 = merge(temps, demo[,c(1,3,4,5,6,7,8)], by=c("ParticipantResearchID"))
+
+dishist = read.csv("./EHR_Phenotypes_202010.csv")
+dishist.2019 = dishist[grep("2019",dishist$VisitActivityDate),] %>% select(ParticipantResearchID, VisitActivityDate, HypertensionComplicated,HypertensionUncomplicated, DiabetesComplicated, DiabetesUncomplicated)
+
+un.ids <- intersect(unique(temps2$ParticipantResearchID),
+                    unique(dishist.2019$ParticipantResearchID))
+# IDs of participants in both datasets
+npts <- length(un.ids)
+
+for(i in 1:npts) {
+  a.tmp <- subset(dishist.2019, ParticipantResearchID==un.ids[i])
+  b.tmp <- subset(temps2, ParticipantResearchID==un.ids[i])
+  a.tmp <- a.tmp[order(a.tmp$VisitActivityDate),]
+  b.tmp <- b.tmp[order(b.tmp$Date),]
+  
+  #dates.a <- ymd_hms(a.tmp$VisitActivityDate)
+  #dates.b <- ymd_hms(b.tmp$Date)
+  dates.a <- as.Date(a.tmp$VisitActivityDate, format = "%Y-%m-%d")
+  dates.b <- as.Date(b.tmp$Date, format = "%Y-%m-%d")
+  a1.values <- rep(NA, nrow(b.tmp))
+  a2.values <- rep(NA, nrow(b.tmp))
+  a3.values <- rep(NA, nrow(b.tmp))
+  a4.values <- rep(NA, nrow(b.tmp))
+  for(k in 1:nrow(b.tmp)) {
+    tmp <- which(dates.b[k] - dates.a > 0)
+    if(length(tmp) > 0) {
+      a1.values[k] <- a.tmp$HypertensionComplicated[max(tmp)]
+      a2.values[k] <- a.tmp$HypertensionUncomplicated[max(tmp)]
+      a3.values[k] <- a.tmp$DiabetesComplicated[max(tmp)]
+      a4.values[k] <- a.tmp$DiabetesUncomplicated[max(tmp)]
+    } else {
+      a1.values[k] <- a.tmp$HypertensionComplicated[1]
+      a2.values[k] <- a.tmp$HypertensionUncomplicated[1]
+      a3.values[k] <- a.tmp$DiabetesComplicated[1]
+      a4.values[k] <- a.tmp$DiabetesUncomplicated[1]
+    }
+  }
+  b.tmp$HypertensionComplicated <- a1.values
+  b.tmp$HypertensionUncomplicated <- a2.values
+  b.tmp$DiabetesComplicated <- a3.values
+  b.tmp$DiabetesUncomplicated <- a4.values
+  if(i==1) {
+    finaloutput <- b.tmp
+  } else {
+    ## stack new data frame with existing data frame
+    finaloutput <- rbind(finaloutput, b.tmp)
+  }
+}
+
+finaloutput$RaceName = recode(finaloutput$RaceName , "Patient Refused" = "Unknown", "American Indian or Alaska Native" = "Other", "Native Hawaiian and Other Pacific Islander" =  "Other")
+finaloutput = finaloutput %>% mutate(Language= ifelse(PreferredLanguageName=="AME"|PreferredLanguageName=="English","English","Others"))
+finaloutput$hypertension = finaloutput$HypertensionComplcated + finaloutput$HypertensionUncomplicated
+
+tmp.finaloutput = names(table(finaloutput$ParticipantResearchID))[as.numeric(table(finaloutput$ParticipantResearchID))>30]
+sub.finaloutput = finaloutput %>% filter(ParticipantResearchID %in% tmp.finaloutput)
+
+sub.finaloutput %>% select(ParticipantResearchID, AgeAtEnrollment, GenderName, MaritalStatusName, RaceName, Language, hypertension) %>%
+  distinct(ParticipantResearchID, .keep_all = T) %>%
+  tbl_summary(by = hypertension,
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)")) %>%
+  add_n %>% bold_labels %>% add_p
+```
+
+## imputation
+```{r}
+library(mice)
+
+sub.finaloutput$time = as.numeric(sub.finaloutput$Date)-as.numeric(as.Date("2019-01-01"))
+dat.init =  mice(sub.finaloutput, m=1, maxit=0, printFlag = F)
+meth = dat.init$method
+predM = dat.init$predictorMatrix
+vars = c("ParticipantResearchID","Date","prob","EthnicityName","PreferredLanguageName", "hypertension")
+predM[vars, -match(vars,colnames(predM))] = 0
+#predM[-match(vars,colnames(predM)), vars] = 0
+meth["EthnicityName"] = ""
+
+imp.output = mice(sub.finaloutput, m=5, seed=3485, method=meth, predictorMatrix = predM, maxit=10, printFlag = F)
+save(imp.output, file="imp.output.Rdata")
+
+final.imp.dat = as.list(1:5)
+for (i in 1:5){
+    tmp = merge(complete(imp.output, action=i), sub.bp[,c(1,2,19)], by=c("ParticipantResearchID", "Date"))
+    final.imp.dat[[i]] = merge(tmp, survey.dat[,c(2,3,6,8,13,15)], by=c("ParticipantResearchID", "Date"))%>% mutate(Age = as.numeric(AgeAtEnrollment),
+                    DiabeteComp = factor(DiabetesComplicated),
+                    DiabeteUncom = factor(DiabetesUncomplicated)) %>%
+      arrange(ParticipantResearchID)
+}
+```
+
+## run the regression
+```{r}
+library(geepack)
+library(stats)
+library(norm)
+library(forestplot)
+
+m.imp.gee = lapply(final.imp.dat, FUN=function(u){
+  geepack::geeglm( hypertension.y ~ time + mean.hr + sd.hr + mean.step + AgeAtEnrollment + GenderName + MaritalStatusName + RaceName  + DiabetesComplicated + DiabetesUncomplicated + Language , id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=u)
+})
+imp.parmmat = sapply(m.imp.gee, coefficients)
+imp.parms = lapply(m.imp.gee, coefficients)
+imp.ses = lapply(m.imp.gee, FUN=function(u){
+    summary(u)$coefficients[,2]
+})
+imp.p = lapply(m.imp.gee, FUN=function(u){
+    summary(u)$coefficients[,4]
+})
+minparm = apply(imp.parmmat, 1, min)
+maxparm = apply(imp.parmmat, 1, max)
+
+mi.parms1 <- mi.inference(imp.parms, imp.ses, confidence=0.95)
+mi.results1 <- cbind(mi.parms1$est, mi.parms1$std.err, mi.parms1$lower, mi.parms1$upper, mi.parms1$df, minparm, maxparm)
+colnames(mi.results1) <- c("Est","StdErr","Lower","Upper","DF","Min","Max")
+a= lapply(m.imp.gee, function(x) QIC(x))
+mean(unlist(lapply(a, function(x) x[1])))
+
+```
+
+## plot forest plot
+```{r}
+library(forestplot)
+base.mean = mi.results1[-1,"Est"]
+base.mean["time"] = base.mean["time"] *30
+base.mean["AgeAtEnrollment"] = base.mean["AgeAtEnrollment"] *10
+base.mean["mean.hr"] = base.mean["mean.hr"] *10
+base.mean["sd.hr"] = base.mean["sd.hr"] *10
+base.mean["mean.step"] = base.mean["mean.step"] *5000
+base.mean = round(exp(base.mean),2)
+
+base.upper = mi.results1[-1,"Upper"]
+base.upper["time"] = base.upper["time"] *30
+base.upper["AgeAtEnrollment"] = base.upper["AgeAtEnrollment"] *10
+base.upper["mean.hr"] = base.upper["mean.hr"] *10
+base.upper["sd.hr"] = base.upper["sd.hr"] *10
+base.upper["mean.step"] = base.upper["mean.step"] *5000
+base.upper = round(exp(base.upper),2)
+
+base.lower = mi.results1[-1,"Lower"]
+base.lower["time"] = base.lower["time"] *30
+base.lower["AgeAtEnrollment"] = base.lower["AgeAtEnrollment"] *10
+base.lower["mean.hr"] = base.lower["mean.hr"] *10
+base.lower["sd.hr"] = base.lower["sd.hr"] *10
+base.lower["mean.step"] = base.lower["mean.step"] *5000
+base.lower = round(exp(base.lower),2)
+
+
+tabletext1 = cbind(c("","Time 30 days", "Heart Rate Mean 10cnt/min", "Heart Rate Standard Deviation", "Step Count 5000 cnt/day", "Age 10 yrs", "Male vs. Female", "Unmarried vs. Married", "Other Race vs. AA", "Asian vs. AA", "Caucasian vs. AA", "Unknown vs. AA", "DiabetesComplicated", "DiabetesUncomplicated", "Language Others vs. ENG" ),
+                  c("OR (95% CI)", paste0(base.mean," (",base.lower,",",base.upper,")")))
+forestplot(tabletext1,
+           mean = c(NA,base.mean),
+           lower = c(NA, base.lower),
+           upper = c(NA, base.upper),
+           xlog = TRUE)
+```
+
+### model with mood and stress
+```{r}
+m.imp.gee2 = lapply(final.imp.dat, FUN=function(u){
+  geepack::geeglm( hypertension.y ~ time + mean.hr + sd.hr + mean.step + AgeAtEnrollment + GenderName + MaritalStatusName + RaceName + DiabetesComplicated + DiabetesUncomplicated + Language + mean.mood + sd.mood + mean.stress + sd.stress, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=u)
+})
+imp.parmmat2 = sapply(m.imp.gee2, coefficients)
+imp.parms2 = lapply(m.imp.gee2, coefficients)
+imp.ses2 = lapply(m.imp.gee2, FUN=function(u){
+    summary(u)$coefficients[,2]
+})
+imp.p2 = lapply(m.imp.gee2, FUN=function(u){
+    summary(u)$coefficients[,4]
+})
+minparm2 = apply(imp.parmmat2, 1, min)
+maxparm2 = apply(imp.parmmat2, 1, max)
+
+mi.parms2 <- mi.inference(imp.parms2, imp.ses2, confidence=0.95)
+mi.results2 <- cbind(mi.parms2$est, mi.parms2$std.err, mi.parms2$lower, mi.parms2$upper, mi.parms2$df, minparm2, maxparm2)
+colnames(mi.results2) <- c("Est","StdErr","Lower","Upper","DF","Min","Max")
+
+b= lapply(m.imp.gee2, function(x) QIC(x))
+mean(unlist(lapply(b, function(x) x[1])))
+```
+
+## plot forest plot
+```{r}
+library(forestplot)
+base.mean2 = mi.results2[-1,"Est"]
+base.mean2["time"] = base.mean2["time"] *30
+base.mean2["AgeAtEnrollment"] = base.mean2["AgeAtEnrollment"] *10
+base.mean2["mean.hr"] = base.mean2["mean.hr"] *10
+base.mean2["sd.hr"] = base.mean2["sd.hr"] *10
+base.mean2["mean.step"] = base.mean2["mean.step"] *5000
+base.mean2 = round(exp(base.mean2),2)
+
+base.upper2 = mi.results2[-1,"Upper"]
+base.upper2["time"] = base.upper2["time"] *30
+base.upper2["AgeAtEnrollment"] = base.upper2["AgeAtEnrollment"] *10
+base.upper2["mean.hr"] = base.upper2["mean.hr"] *10
+base.upper2["sd.hr"] = base.upper2["sd.hr"] *10
+base.upper2["mean.step"] = base.upper2["mean.step"] *5000
+base.upper2 = round(exp(base.upper2),2)
+
+base.lower2 = mi.results2[-1,"Lower"]
+base.lower2["time"] = base.lower2["time"] *30
+base.lower2["AgeAtEnrollment"] = base.lower2["AgeAtEnrollment"] *10
+base.lower2["mean.hr"] = base.lower2["mean.hr"] *10
+base.lower2["sd.hr"] = base.lower2["sd.hr"] *10
+base.lower2["mean.step"] = base.lower2["mean.step"] *5000
+base.lower2 = round(exp(base.lower2),2)
+
+
+tabletext2 = cbind(c("","Time 30 days", "Heart Rate Mean 10cnt/min", "Heart Rate Standard Deviation", "Step Count 5000 cnt/day", "Age 10 yrs", "Male vs. Female", "Unmarried vs. Married", "Other Race vs. AA", "Asian vs. AA", "Caucasian vs. AA", "Unknown vs. AA", "DiabetesComplicated", "DiabetesUncomplicated", "Language Others vs. ENG", "Daily Mean Mood Score", "Daily Mood Score Standard Deviation", "Daily Mean Stress Score", "Daily Mood Stress Standard Deviation"),
+                  c("OR (95% CI)", paste0(base.mean2," (",base.lower2,",",base.upper2,")")))
+forestplot(tabletext2,
+           mean = c(NA,base.mean2),
+           lower = c(NA, base.lower2),
+           upper = c(NA, base.upper2),
+           xlog = TRUE)
+```
+
+### Model diagnostics
+```{r}
+library(stats)
+library(DHARMa)
+library(car)
+
+lapply(m.imp.gee, FUN = function(u){
+  scatter.smooth(predict(u, type='response'), resid(m.imp.gee[[1]], type='pearson'), col='gray', xlab = "Fitted", ylab="Pearson Residuals")
+})
+
+lapply(m.imp.gee2, FUN = function(u){
+  scatter.smooth(predict(u, type='response'), resid(m.imp.gee[[1]], type='pearson'), col='gray', xlab = "Fitted", ylab="Pearson Residuals")
+})
+
+vifs1 = lapply(m.imp.gee, function(x) vif(x))
+vifs2 = lapply(m.imp.gee2, function(x) vif(x))
+
+##simulationOutput <- simulateResiduals(fittedModel = m.imp.gee[[1]], plot = T)
+```
+
+
+### other possible models test
+```{r}
+fit1 = geeglm(hypertension.y ~ time + mean.hr + sd.hr + mean.step + AgeAtEnrollment + GenderName + MaritalStatusName + RaceName  + DiabetesComplicated + DiabetesUncomplicated + Language, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=final.dat)
+
+fit2 = geeglm(hypertension ~ time + AgeAtEnrollment + GenderName + MaritalStatusName + RaceName  + DiabetesComplicated + DiabetesUncomplicated, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=final.dat)
+
+fit3 = geeglm(hypertension ~ time + AgeAtEnrollment + GenderName + MaritalStatusName + DiabetesComplicated + DiabetesUncomplicated, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=final.dat)
+
+fit4 = geeglm(hypertension ~ time + AgeAtEnrollment + GenderName + MaritalStatusName + RaceName  + DiabetesUncomplicated, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=final.dat)
+
+qics = data.frame(fit1 = QIC(fit1), fit2 = QIC(fit2), fit3 = QIC(fit3))
+
+## draw effect plot
+plot(allEffects(new.reg.gee), type = "response", ylim = c(0, 1))
+
+## draw forest plot
+
+
+reg.gee = geeglm(hypertension ~ Date + mean.hr + sd.hr + dailystep + mean.mood + sd.mood + mean.stress + sd.stress, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=train.dat)
+test.out = predict(reg.gee, newdata=test.dat, type='response')
+test.out2 = prediction(reg.gee, newdata=test.dat, type='response')
+
+fitte.res = ifelse(test.out > 0.5, 1, 0)
+fitte.res = as.factor(fitte.res, levels)
+cm2 = confusionMatrix(data=fitte.res, reference = test.dat$hypertension)
+
+reg.gee = geeglm(hypertension ~ Date + mean.hr + sd.hr + dailystep + mean.mood + sd.mood + mean.stress + sd.stress, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=finaldat)
+summary(reg.gee)
+plot_data = cv_gee(reg.gee, return_data = TRUE, M = 5)
+##xyplot(model_year ~ Date|.rule, data= plot_data, type = "smooth", auto.key = TRUE,  layout = c(3, 1))
+sph.score = plot_data$.score[plot_data$.rule=="spherical"]
+pred.val = ifelse(sph.score>0.5, 1, 0)
+cm = confusionMatrix(data=as.factor(pred.val), reference=as.factor(plot_data$hypertension[plot_data$.rule=="spherical"]))
+
+
+reg.gee2 = geeglm(hypertension ~ mean.hr + sd.hr + dailystep + mean.mood + sd.mood + mean.stress + sd.stress, id = ParticipantResearchID, family=binomial(link='logit'), corstr="exchangeable", data=train.dat)
+
+```
+
+
+
