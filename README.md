@@ -16,7 +16,7 @@ install.packages("forestplot")
 ```
 
 ### Usage
-There are six trunks of codes:
+There are six trunks in the 629_project1.Rmd file:
 * Data read-in on the cluster (This chunk needs to be run on the server: armis2.arc-ts.umich.edu; slurm scripts are under my home directory)
 * Date exploration and combination 
 * Multiple imputation using MICE
