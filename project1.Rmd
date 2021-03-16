@@ -1,0 +1,179 @@
+---
+title: '629_project'
+author: "YileChen"
+date: "2/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library("gtsummary")
+library(ggplot2)
+library(gridExtra)
+library(ggpubr)
+```
+
+```{r}
+setwd("C:/Users/evely/Google Drive/2021winter/629")
+survey.dat = read.csv("./MIPACT_Synthetic_SurveyData_Final.csv")
+```
+
+## survey data exploration
+```{r}
+gender2 = survey.dat[grep("Quarterly FEMALE|Quarterly MALE", survey.dat$SurveyName),] %>%
+  select(ParticipantResearchID, SurveyName) %>%
+  distinct(ParticipantResearchID, .keep_all = TRUE) %>%
+  mutate(gender = sapply(strsplit(as.character(SurveyName)," "), `[`, 5))
+gender2$gender[is.na(gender2$gender)==T] = "MALE"
+
+gender = survey.dat[grep("Annually FEMALE|Annually MALE", survey.dat$SurveyName),] %>%
+  select(ParticipantResearchID, SurveyName) %>%
+  distinct(ParticipantResearchID, .keep_all = TRUE) %>%
+  mutate(gender = sapply(strsplit(as.character(SurveyName)," "), `[`, 4))
+
+final.gender = rbind(gender, gender2) %>% select(ParticipantResearchID, gender) %>% distinct()
+
+
+questions = unique(survey.dat$SurveyQuestion)
+gender.dat = survey.dat %>% filter( SurveyQuestion %in% questions[146])
+table(as.numeric(factor(gender.dat$SurveyAnswer)))
+
+
+## smoking data gathering
+smoke.dat = NULL
+for (i in c(41, 50, 79, 80, 133, 134, 165, 195, 197)){
+  smoke.dat = rbind(smoke.dat, subset(survey.dat, SurveyQuestion == questions[i]))
+}
+smokers = smoke.dat %>% filter(SurveyQuestion == "Did you use tobacco products in the past?") %>% 
+  select(ParticipantResearchID, SurveyAnswer) %>% distinct()
+## dup sub:316643 contradict results
+
+## alcohol data gathering
+alco.dat = NULL
+for(j in c(50,170,176,201,219)){
+  alco.dat = rbind(alco.dat, subset(survey.dat, SurveyQuestion == questions[j]))
+}
+alco.12m.4drks = alco.dat %>% filter(SurveyQuestion == questions[201]) %>% mutate(values = as.numeric(factor(SurveyAnswer)))
+temp = alco.12m.4drks %>% group_by(ParticipantResearchID) %>% summarise(mean = mean(values)) 
+table(temp$mean)
+
+## stress data gathering
+stress.dat = NULL
+for(j in c(1,59)){
+  stress.dat = rbind(stress.dat, subset(survey.dat, SurveyQuestion == questions[j]))
+}
+stress.dat$SurveyAnswer = as.numeric(as.character(stress.dat$SurveyAnswer))
+temp = stress.dat %>% group_by(ParticipantResearchID) %>% summarise(med = median(SurveyAnswer))
+summary(temp$med)
+
+
+## salt data gathering
+salt.dat = NULL
+for(j in c(10,107)){
+  salt.dat = rbind(salt.dat, subset(survey.dat, SurveyQuestion == questions[j]))
+}
+salt.dat$SurveyAnswer = as.numeric(as.character(salt.dat$SurveyAnswer))
+temp = salt.dat %>% group_by(ParticipantResearchID) %>% summarise(med = median(SurveyAnswer))
+table(temp$med)
+
+```
+
+## Healthkit data exploration blood pressure
+```{r}
+#load("./bp.dat.RData")
+diastolic = bp.dat %>% filter(HealthKitType == "BloodPressureDiastolic")
+systolic = bp.dat %>% filter(HealthKitType == "BloodPressureSystolic")
+length(unique(diastolic$ParticipantResearchID))
+length(unique(systolic$ParticipantResearchID))
+diastolic$time_points = 1
+diastolic$time_points[diastolic$Date>"2019-04-15" & diastolic$Date <="2019-04-30"] = 2
+diastolic$time_points[diastolic$Date>"2019-04-30" & diastolic$Date <="2019-05-15"] = 3
+diastolic$time_points[diastolic$Date>"2019-05-15" & diastolic$Date <="2019-05-31"] = 4
+diastolic$time_points[diastolic$Date>"2019-05-30" & diastolic$Date <="2019-06-15"] = 5
+diastolic$time_points[diastolic$Date>"2019-06-15" & diastolic$Date <="2019-06-30"] = 6
+
+mean.diastolic = diastolic %>% group_by(ParticipantResearchID, time_points) %>%
+  summarise(medianbp = median(Value),
+            minbp = min(Value),
+            maxbp = max(Value))
+#table(mean.diastolic$time_points)
+#sum(table(mean.diastolic$ParticipantResearchID)==6)
+med.dia.p = ggplot(mean.diastolic, aes(x = factor(time_points), y=mean.diastolic$medianbp), fill=factor(time_points)) + geom_boxplot()  + xlab("") + ylab("Median Diastolic")  +stat_compare_means() +theme_classic() 
+
+
+systolic$time_points = 1
+systolic$time_points[systolic$Date>"2019-04-15" & systolic$Date <="2019-04-30"] = 2
+systolic$time_points[systolic$Date>"2019-04-30" & systolic$Date <="2019-05-15"] = 3
+systolic$time_points[systolic$Date>"2019-05-15" & systolic$Date <="2019-05-31"] = 4
+systolic$time_points[systolic$Date>"2019-05-30" & systolic$Date <="2019-06-15"] = 5
+systolic$time_points[systolic$Date>"2019-06-15" & systolic$Date <="2019-06-30"] = 6
+
+mean.systolic = systolic %>% group_by(ParticipantResearchID, time_points) %>% summarise(medianbp = median(Value),
+            minbp = min(Value),
+            maxbp = max(Value))
+table(mean.systolic$time_points)
+sum(table(mean.systolic$ParticipantResearchID)==6)
+med.sys.p = ggplot(mean.systolic, aes(x = factor(time_points), y=mean.systolic$medianbp), fill=factor(time_points)) + geom_boxplot()  + xlab("") + ylab("Median Systolic")  +stat_compare_means() +theme_classic() +theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank())
+grid.arrange(med.sys.p, med.dia.p, nrow=2)
+
+## plot for random person's everyday entry
+temp = subset(systolic, ParticipantResearchID == "900754")
+sys.temp = data.frame(Days = (as.numeric(as.Date(temp$Date)) - 17987), y = temp$Value)
+p.sys = ggplot(data=sys.temp, aes(x=Days, y=y)) + geom_line() +geom_point() +ylab("Systolic mm Hg") +theme_classic() +theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank())
+temp = subset(diastolic, ParticipantResearchID == "900754")
+dia.temp = data.frame(Days = (as.numeric(as.Date(temp$Date)) - 17987), y = temp$Value)
+p.dia = ggplot(data=dia.temp, aes(x=Days, y=y)) + geom_line() +geom_point() +ylab("Diastolic mm Hg") +theme_classic()
+grid.arrange(p.sys, p.dia, nrow=2)
+
+hyper.dias = unique(mean.diastolic$ParticipantResearchID[mean.diastolic$medianbp>=90])
+hyper.sys = unique(mean.systolic$ParticipantResearchID[mean.systolic$medianbp>=140])
+hyper.dias.dat = mean.diastolic %>% filter(ParticipantResearchID %in% hyper.dias)
+```
+
+## randomly sampled 20 individuals for data visualization 
+```{r, message=F, warning=F}
+set.seed(123)
+ids = sample(unique(final.gender$ParticipantResearchID),20)
+ind20.sys = mean.systolic %>% filter(ParticipantResearchID %in% ids) %>%
+  mutate(gender = final.gender$gender[match(ParticipantResearchID, final.gender$ParticipantResearchID)])
+
+trend.sys.p = ggplot(ind20.sys)+ aes(x = time_points, y = medianbp, group=ParticipantResearchID, fill=gender, color=gender) + geom_line()+
+  labs(x="Time Points", y="Systolic mm Hg") + stat_summary(aes(group = 1), geom = "point", fun = mean,shape = 17, size = 3) +theme_classic()+theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank(),legend.position = "none")+facet_wrap(~gender,ncol=2)
+
+ind20.dia = mean.diastolic %>% filter(ParticipantResearchID %in% ids)%>%
+  mutate(gender = final.gender$gender[match(ParticipantResearchID, final.gender$ParticipantResearchID)])
+trend.dia.p = ggplot(ind20.dia)+ aes(x = time_points, y = medianbp, group=ParticipantResearchID, fill=gender, color=gender) + geom_line()+ labs(x="Time Points", y="Diastolic mm Hg") + stat_summary(aes(group = 1), geom = "point", fun = mean,shape = 17, size = 3)+theme_classic()+facet_wrap(~gender,ncol=2)+theme(legend.position = "none") 
+
+grid.arrange(trend.sys.p, trend.dia.p, nrow=2)
+```
+
+## Healthkit data exploration heart rate
+```{r}
+load("hr.dat.RData")
+getstats = function(input = hr.dat04){
+  output = input %>% group_by(time_points) %>% summarise(mean= mean(mean_hr)) %>% summarise(mean(mean), sd(mean))
+  return(output)
+}
+getstats()
+getstats(input = hr.dat05)
+getstats(input = hr.dat06)
+length(unique(hr.dat05$ParticipantResearchID))
+length(intersect(intersect(hr.dat04$ParticipantResearchID,hr.dat05$ParticipantResearchID),hr.dat06$ParticipantResearchID))
+```
+
+## Healthkit data diet
+```{r}
+load("diet.dat.RData")
+diet.dat %>% group_by(ParticipantResearchID, Date) %>% summarise(sums = sum(Value), times=mean(time)) %>% group_by(times) %>% summarise(q1 = quantile(sums,1/4), median = median(sums), q3=quantile(sums, 3/4))
+diet.dat %>% group_by(time) %>% summarise(cnt = length(unique(ParticipantResearchID))) 
+length(intersect(intersect(unique(diet.dat$ParticipantResearchID[diet.dat$time==4]),unique(diet.dat$ParticipantResearchID[diet.dat$time==5])),unique(diet.dat$ParticipantResearchID[diet.dat$time==6])))
+
+load("energy.dat.RData")
+ener.dat04 %>% group_by(time) %>% summarise(mens = mean(mean_energy), sds = sd(mean_energy))
+ener.dat05 %>% group_by(time) %>% summarise(mens = mean(mean_energy), sds = sd(mean_energy))
+ener.dat06 %>% group_by(time) %>% summarise(mens = mean(mean_energy), sds = sd(mean_energy))
+length(intersect(intersect(ener.dat04$ParticipantResearchID,ener.dat05$ParticipantResearchID),ener.dat06$ParticipantResearchID))
+```
+

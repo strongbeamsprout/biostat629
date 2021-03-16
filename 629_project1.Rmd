@@ -79,6 +79,7 @@ library(ggplot2)
 library(lubridate)
 library("gtsummary")
 library(tidyr)
+library(gridExtra)
 setwd("C:/Users/evely/Google Drive/2021winter/629/")
 load("hyper.dat.RData")
 load("hr.dat.RData")
@@ -184,6 +185,24 @@ sub.finaloutput %>% select(ParticipantResearchID, AgeAtEnrollment, GenderName, M
               statistic = list(all_continuous() ~ "{mean} ({sd})",
                                all_categorical() ~ "{n} ({p}%)")) %>%
   add_n %>% bold_labels %>% add_p
+
+p1 = ggplot(bp, aes(x=mean.x)) + geom_histogram(color="black", fill="white") +theme_classic() + xlab("Daily Mean Diastolic mm Hg") + geom_vline(aes(xintercept=mean(mean.x)),
+            color="blue", linetype="dashed", size=0.5) + geom_vline(aes(xintercept=90),
+            color="red", linetype="dashed", size=0.5)
+
+p2 = ggplot(bp, aes(x=mean.y)) + geom_histogram(color="black", fill="white") +theme_classic() + xlab("Daily Mean Systolic mm Hg") + geom_vline(aes(xintercept=mean(mean.y)),
+            color="blue", linetype="dashed", size=0.5) + geom_vline(aes(xintercept=140),
+            color="red", linetype="dashed", size=0.5)
+
+p3 = ggplot(hr, aes(x=mean))+ geom_histogram(color="black", fill="white") +theme_classic() + xlab("Daily Mean Heart Rate bpm") + geom_vline(aes(xintercept=mean(mean)),
+            color="blue", linetype="dashed", size=0.5)+ geom_vline(aes(xintercept=100),
+            color="red", linetype="dashed", size=0.5)
+
+p4 = ggplot(step, aes(x=mean))+ geom_histogram(color="black", fill="white") +theme_classic() + xlab("Daily Total Step Count") + geom_vline(aes(xintercept=mean(mean)),
+            color="blue", linetype="dashed", size=0.5)+ geom_vline(aes(xintercept=7500),
+            color="red", linetype="dashed", size=0.5) +xlim(c(0,50000))
+
+grid.arrange(p1,p2,p3,p4, nrow=2)
 ```
 
 ## imputation
